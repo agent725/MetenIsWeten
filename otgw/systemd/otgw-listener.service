@@ -1,0 +1,35 @@
+[Unit]
+Description=OpenTherm Gateway Listener
+After=network.target mosquitto.service
+Wants=mosquitto.service
+# Never give up restarting — the listener handles reconnects internally
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+NotifyAccess=main
+WatchdogSec=120
+ExecStart=/usr/bin/python3 /opt/otgw/scripts/otgw_listener.py
+Restart=always
+RestartSec=10
+TimeoutSec=120
+StandardOutput=journal
+StandardError=journal
+
+# Memory limits to prevent tmpfs exhaustion (NFR-4.58)
+MemoryMax=128M
+MemoryHigh=96M
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# Need access to serial devices
+SupplementaryGroups=dialout
+# Share /run/otgw with heartbeat for health metrics file (NFR-4.68).
+# /tmp is isolated by PrivateTmp; health file must live in /run/otgw.
+ReadWritePaths=/run/otgw
+
+[Install]
+WantedBy=multi-user.target

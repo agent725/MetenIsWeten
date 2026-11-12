@@ -1,0 +1,20 @@
+[Unit]
+Description=Set system time from P1 smart meter if NTP unavailable
+# Run after mosquitto (P1 messages arrive via MQTT) but before heartbeat
+After=mosquitto.service network.target
+Wants=mosquitto.service
+# Don't block boot if this fails — it's best-effort
+DefaultDependencies=no
+ConditionPathExists=/etc/otgw/pi-id
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/otgw/scripts/time_sync.py
+RemainAfterExit=no
+StandardOutput=journal
+StandardError=journal
+# Allow up to 6 min (5 min wait + margin)
+TimeoutStartSec=360
+
+[Install]
+WantedBy=multi-user.target

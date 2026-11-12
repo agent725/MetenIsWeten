@@ -1,0 +1,22 @@
+[Unit]
+Description=Generate device ID from ethernet MAC
+# network-pre.target is raised by systemd-networkd/udev once network
+# interfaces have been probed and appear in the kernel (ip link show works).
+# local-fs.target fires earlier but before interface probing completes on
+# some Pi models, causing pi_id.sh to find no ethernet and fail.
+After=local-fs.target network-pre.target
+# Declare Before= so that if these services start in the same transaction
+# (normal boot), device-setup wins the ordering race.
+# Consumers also declare After=otgw-device-setup.service in their own
+# unit files to enforce the dependency on manual restarts too.
+Before=mqtt-logger.service heartbeat.service log-sync.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/otgw/scripts/device_setup.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

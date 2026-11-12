@@ -1,0 +1,20 @@
+[Unit]
+Description=LED status indicator — PWR LED shows system health
+After=network.target mosquitto.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+NotifyAccess=main
+WatchdogSec=60
+ExecStart=/opt/otgw/scripts/led_status.py
+# Turn off PWR LED on clean stop (system is about to go down)
+ExecStop=/bin/sh -c 'echo none > /sys/class/leds/PWR/trigger; echo 0 > /sys/class/leds/PWR/brightness || true'
+Restart=always
+RestartSec=5
+TimeoutSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

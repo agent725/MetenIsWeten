@@ -1,0 +1,15 @@
+[Unit]
+Description=OTGW FAT32 Filesystem Integrity Check
+After=local-fs.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/opt/otgw/scripts/otgw_fsck.sh
+TimeoutStartSec=60
+StandardOutput=journal
+StandardError=journal
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

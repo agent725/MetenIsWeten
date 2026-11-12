@@ -1,0 +1,49 @@
+[Unit]
+Description=MQTT Message Logger
+After=network.target mosquitto.service otgw-device-setup.service otgw-fsck.service
+Wants=mosquitto.service otgw-device-setup.service
+# Never give up restarting — logger retries MQTT connection internally
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+NotifyAccess=main
+WatchdogSec=120
+# Pre-populate RAM disk with today's log files from FAT32 before starting.
+# This ensures --append-verify works correctly after a reboot (RAM disk is
+# empty but /var/log/otgw already holds pre-reboot data for today).
+# Pre-populate today's date directory from FAT32 so --append-verify works after reboot.
+# Files are now at <image_id>/YYYY-MM-DD/ — copy only today's subdir to keep RAM bounded.
+ExecStartPre=/bin/bash -c 'TODAY=$(date +%%Y-%%m-%%d); IMAGE_ID=$(cat /etc/otgw/pi-id 2>/dev/null); if [ -n "$IMAGE_ID" ] && [ -d "/var/log/otgw/$IMAGE_ID/$TODAY" ]; then mkdir -p "/run/otgw/$IMAGE_ID/$TODAY" && rsync --archive --no-owner --no-group --exclude=".fseventsd" --exclude=".Spotlight-V100" --exclude=".DS_Store" --exclude="._*" --exclude="Thumbs.db" --append-verify "/var/log/otgw/$IMAGE_ID/$TODAY/" "/run/otgw/$IMAGE_ID/$TODAY/" 2>/dev/null; fi; exit 0'
+# /run/otgw is tmpfs — mqtt_logger detects this and writes each message
+# immediately (no buffering). --write-interval is kept as fallback only.
+# log-flush.timer rsyncs RAM disk to FAT32 every 5 min; ExecStopPost syncs on stop.
+ExecStart=/usr/bin/python3 /opt/otgw/scripts/mqtt_logger.py --output-dir /run/otgw --write-interval 60
+ExecStopPost=/usr/bin/rsync --archive --no-owner --no-group --exclude=".fseventsd" --exclude=".Spotlight-V100" --exclude=".DS_Store" --exclude="._*" --exclude="Thumbs.db" --append-verify /run/otgw/ /var/log/otgw/
+Restart=always
+RestartSec=10
+TimeoutSec=120
+StandardOutput=journal
+StandardError=journal
+
+# Memory limits to prevent tmpfs exhaustion (NFR-4.58)
+MemoryMax=128M
+MemoryHigh=96M
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# RuntimeDirectory creates /run/otgw before ExecStart and grants write access.
+# Preserve=yes keeps it alive through restarts so ExecStopPost can rsync it.
+RuntimeDirectory=otgw
+RuntimeDirectoryPreserve=yes
+# Cap the /run/otgw tmpfs at 32M — enforced as a separate mount, no cgroups
+# needed. Normal buffer is <3M (15-min flush interval). 32M = ~10× headroom.
+RuntimeDirectorySize=32M
+# FAT32 log dir needed by ExecStopPost rsync
+ReadWritePaths=/var/log/otgw
+
+[Install]
+WantedBy=multi-user.target

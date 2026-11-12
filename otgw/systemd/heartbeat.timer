@@ -1,0 +1,18 @@
+[Unit]
+Description=OTGW System Heartbeat Timer
+
+[Timer]
+# Run every minute — writes to RAM (/run/otgw); reaches FAT32 via log-flush
+OnCalendar=*:*:00
+
+# Randomize up to 60 seconds to avoid fleet thundering herd
+RandomizedDelaySec=60
+
+# Run shortly after boot
+OnBootSec=30s
+
+# Catch up if missed
+Persistent=true
+
+[Install]
+WantedBy=timers.target

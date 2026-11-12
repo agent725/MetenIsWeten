@@ -1,0 +1,18 @@
+[Unit]
+Description=OTGW Log Synchronization Timer
+
+[Timer]
+# Run every minute for near-real-time VPS sync
+OnUnitActiveSec=1min
+
+# Add small randomized delay to avoid thundering herd when multiple Pis sync
+RandomizedDelaySec=10
+
+# Run immediately if last scheduled time was missed (e.g., system was off)
+Persistent=true
+
+# Start 2 minutes after boot
+OnBootSec=2min
+
+[Install]
+WantedBy=timers.target

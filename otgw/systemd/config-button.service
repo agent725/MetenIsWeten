@@ -1,0 +1,19 @@
+[Unit]
+Description=Config button (GPIO 14) — WPS / AP mode toggle
+After=network.target NetworkManager.service
+Wants=config-portal.service
+# Never give up restarting — hall sensor must always respond to magnet
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+NotifyAccess=main
+WatchdogSec=60
+ExecStart=/opt/otgw/scripts/config_button.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+[Unit]
+Description=WiFi AP Switching Service
+After=network.target NetworkManager.service avahi-daemon.service otgw-wifi-restore.service
+Wants=NetworkManager.service otgw-wifi-restore.service
+# Never give up — service waits for wifi.conf if not yet configured
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+NotifyAccess=main
+WatchdogSec=60
+ExecStart=/usr/bin/python3 /opt/otgw/scripts/wifi_switch.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=30
+TimeoutSec=120
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+# Needs /etc/otgw for wifi.conf and /run for state file — allow both
+ReadWritePaths=/run
+
+[Install]
+WantedBy=multi-user.target

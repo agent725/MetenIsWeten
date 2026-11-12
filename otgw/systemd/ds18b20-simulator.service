@@ -1,0 +1,15 @@
+[Unit]
+Description=DS18B20 Simulator (synthetic temperature readings)
+After=mosquitto.service
+Requires=mosquitto.service
+# Cannot run alongside the real listener
+Conflicts=ds18b20-listener.service
+
+[Service]
+Type=simple
+ExecStart=/opt/otgw/scripts/ds18b20_simulator.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

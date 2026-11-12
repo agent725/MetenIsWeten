@@ -1,0 +1,21 @@
+[Unit]
+Description=Resident dashboard (port 80/443) — read-only temperature and energy display
+After=network.target mosquitto.service
+Wants=mosquitto.service
+# Never give up restarting — residents should always have a dashboard
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/opt/otgw/scripts/resident_portal.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Memory limits to prevent tmpfs exhaustion (NFR-4.58)
+MemoryMax=128M
+MemoryHigh=96M
+
+[Install]
+WantedBy=multi-user.target

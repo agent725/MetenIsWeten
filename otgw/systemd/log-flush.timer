@@ -1,0 +1,9 @@
+[Unit]
+Description=Flush OTGW live logs to FAT32 every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+
+[Install]
+WantedBy=timers.target

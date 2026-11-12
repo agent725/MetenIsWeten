@@ -1,0 +1,17 @@
+[Unit]
+Description=Flush OTGW live logs from RAM to FAT32
+# Run after mqtt-logger has had a chance to write its buffer
+After=mqtt-logger.service
+
+[Service]
+Type=oneshot
+# Kill rsync if it hangs — next timer fire will retry (NFR-4.81)
+TimeoutSec=120
+# Pass 1: append-verify for log files (incremental, efficient) — exclude heartbeat.json
+# Pass 2: plain --archive for heartbeat.json (always overwrites; replace semantics)
+# heartbeat.json is atomically replaced each run via os.replace(); --append-verify
+# skips it once dest_size >= source_size, freezing the FAT32 copy permanently (NFR-4.92)
+ExecStart=/usr/bin/rsync --archive --no-owner --no-group --exclude=".fseventsd" --exclude=".Spotlight-V100" --exclude=".DS_Store" --exclude="._*" --exclude="Thumbs.db" --append-verify --exclude="heartbeat.json" /run/otgw/ /var/log/otgw/
+ExecStart=/usr/bin/rsync --archive --no-owner --no-group --include="heartbeat.json" --include="**/" --exclude="*" /run/otgw/ /var/log/otgw/
+StandardOutput=journal
+StandardError=journal

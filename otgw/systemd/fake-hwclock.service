@@ -1,0 +1,20 @@
+[Unit]
+Description=Restore / save the current clock
+DefaultDependencies=false
+Before=sysinit.target shutdown.target
+After=local-fs.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Store the state file on p3 (/etc/otgw/ — ext4, always writable under overlayroot).
+# The default /etc/fake-hwclock.data is on the overlayroot lowerdir; writes go to
+# tmpfs and are lost on reboot, causing the Pi to always boot at the prebake
+# timestamp.  See FSD §G.41 and NFR-4.43.
+Environment=HWCLOCKFILE=/etc/otgw/fake-hwclock.data
+ExecStart=-/usr/sbin/fake-hwclock load
+ExecStop=/usr/sbin/fake-hwclock save
+
+[Install]
+WantedBy=sysinit.target

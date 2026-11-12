@@ -1,0 +1,13 @@
+[Unit]
+Description=P1 Gas Meter Simulator (synthetic gas readings)
+After=mosquitto.service
+Requires=mosquitto.service
+
+[Service]
+Type=simple
+ExecStart=/opt/otgw/scripts/p1_simulator.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

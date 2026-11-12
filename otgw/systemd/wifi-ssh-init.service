@@ -1,0 +1,14 @@
+[Unit]
+Description=Apply WiFi SSH iptables rule from /etc/otgw/wifi-ssh
+After=otgw-device-setup.service
+Before=ssh.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/opt/otgw/scripts/wifi_ssh_init.sh
+RemainAfterExit=yes
+TimeoutStartSec=10
+
+[Install]
+WantedBy=multi-user.target

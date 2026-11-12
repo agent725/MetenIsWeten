@@ -1,0 +1,26 @@
+[Unit]
+Description=OTGW Log Synchronization
+After=network-online.target otgw-device-setup.service otgw-fsck.service
+Wants=network-online.target otgw-device-setup.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/opt/otgw/scripts/log_sync.sh
+TimeoutStartSec=90
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/var/log/otgw
+ReadOnlyPaths=/etc/otgw
+
+# Allow network access
+PrivateNetwork=false
+
+[Install]
+WantedBy=multi-user.target

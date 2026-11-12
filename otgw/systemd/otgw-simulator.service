@@ -1,0 +1,15 @@
+[Unit]
+Description=OTGW Simulator (synthetic OpenTherm messages)
+After=mosquitto.service
+Requires=mosquitto.service
+# Cannot run alongside the real listener
+Conflicts=otgw-listener.service
+
+[Service]
+Type=simple
+ExecStart=/opt/otgw/scripts/otgw_simulator.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

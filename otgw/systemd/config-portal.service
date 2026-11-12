@@ -1,0 +1,22 @@
+[Unit]
+Description=Installer portal (port 8080) — WiFi setup and system config
+After=network.target NetworkManager.service mosquitto.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/opt/otgw/scripts/config_portal.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Memory limits to prevent tmpfs exhaustion (NFR-4.58)
+MemoryMax=128M
+MemoryHigh=96M
+
+[Install]
+# Always-on installer portal (port 8080).
+# Resident dashboard (always-on, port 80) runs as resident-portal.service
+# Hall sensor (config-sensor.service) controls only the WiFi AP.
+WantedBy=multi-user.target

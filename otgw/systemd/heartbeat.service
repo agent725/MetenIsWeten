@@ -1,0 +1,26 @@
+[Unit]
+Description=OTGW System Heartbeat
+After=network.target mosquitto.service otgw-device-setup.service otgw-fsck.service
+Wants=mosquitto.service otgw-device-setup.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/otgw/scripts/heartbeat.py
+StandardOutput=journal
+StandardError=journal
+
+# Memory limits to prevent tmpfs exhaustion (NFR-4.58)
+# Heartbeat is lightweight; lower limit than other services
+MemoryMax=64M
+MemoryHigh=48M
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/etc/otgw
+ReadWritePaths=/run/otgw
+
+[Install]
+WantedBy=multi-user.target

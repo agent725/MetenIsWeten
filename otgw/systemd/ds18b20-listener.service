@@ -1,0 +1,37 @@
+[Unit]
+Description=DS18B20 Temperature Sensor Listener
+After=network.target mosquitto.service
+Wants=mosquitto.service
+# Never give up restarting — listener waits internally for 1-Wire and MQTT
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+NotifyAccess=main
+WatchdogSec=120
+ExecStart=/usr/bin/python3 /opt/otgw/scripts/ds18b20_listener.py --interval 15
+Restart=always
+RestartSec=10
+TimeoutSec=120
+StandardOutput=journal
+StandardError=journal
+
+# Memory limits to prevent tmpfs exhaustion (NFR-4.58)
+MemoryMax=128M
+MemoryHigh=96M
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# Note: ReadOnlyPaths=/sys/bus/w1/devices intentionally omitted.
+# When the 1-Wire kernel driver has not yet enumerated devices at service
+# start time, systemd fails to bind-mount the non-existent sysfs path and
+# silently refuses to start the service (inactive dead, no journal entries).
+# ProtectSystem=strict already restricts writes to /usr and /boot; sysfs
+# is a pseudo-filesystem and does not need an explicit ReadOnlyPaths guard.
+# See FSD §G.12 and NFR-4.17.
+
+[Install]
+WantedBy=multi-user.target

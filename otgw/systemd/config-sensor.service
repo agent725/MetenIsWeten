@@ -1,0 +1,19 @@
+[Unit]
+Description=Config sensor (GPIO 4, hall effect) — portal toggle / safe shutdown
+After=network.target NetworkManager.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+NotifyAccess=main
+WatchdogSec=60
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/otgw/scripts/config_sensor.py
+Restart=always
+RestartSec=5
+TimeoutSec=120
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

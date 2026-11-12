@@ -1,0 +1,16 @@
+[Unit]
+Description=Restore home WiFi NM connection from /etc/otgw/wifi.conf
+Documentation=man:wifi_restore.sh(8)
+# Run after NM is up, before anything needs the internet.
+After=NetworkManager.service
+Wants=NetworkManager.service
+DefaultDependencies=no
+Before=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/otgw/scripts/wifi_restore.sh
+
+[Install]
+WantedBy=multi-user.target
