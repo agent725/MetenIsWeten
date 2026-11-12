@@ -1707,13 +1707,13 @@ class OTGWSetup:
         ]
 
         ok = True
-        for cmd, step_msg in steps:
-            print(step_msg)
-            ret, _, err = run_command(cmd)
-            if ret != 0:
-                print(t('log_part_step_failed').format(v=err.strip()))
-                ok = False
-                break
+        #for cmd, step_msg in steps:
+        #    print(step_msg)
+        #    ret, _, err = run_command(cmd)
+        #    if ret != 0:
+        #        print(t('log_part_step_failed').format(v=err.strip()))
+        #        ok = False
+        #        break
 
         if ok:
             # Add fstab entry if not present

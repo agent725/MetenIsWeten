@@ -123,10 +123,11 @@ install_packages() {
 
     # esptool: install via pip — the Debian package is incomplete (missing stub flasher files).
     # The pip version (5.x) is fully functional and needed for TUI P1 dongle firmware flash.
-    if ! python3 -c "import esptool" &>/dev/null; then
-        info "Installing esptool via pip..."
-        pip3 install --break-system-packages esptool
-    fi
+    #if ! python3 -c "import esptool" &>/dev/null; then
+    #    info "Installing esptool via pip..."
+    #    # DOES NOT WORK ON ARMBIAN: pip3 install --break-system-packages esptool
+    #    pip3 install esptool
+    #fi
 
     info "Packages installed successfully"
 }
@@ -264,7 +265,7 @@ copy_files() {
     fi
 
     # Copy scripts
-    cp -r "$PROJECT_DIR/scripts" "$INSTALL_DIR/"
+    # ALREADY DONE: cp -r "$PROJECT_DIR/scripts" "$INSTALL_DIR/"
     chmod +x "$INSTALL_DIR/scripts/"*.py 2>/dev/null || true
     chmod +x "$INSTALL_DIR/scripts/"*.sh 2>/dev/null || true
 
@@ -276,7 +277,7 @@ copy_files() {
     info "Code version: $_git_commit → $CONFIG_DIR/version"
 
     # Copy TUI
-    cp -r "$PROJECT_DIR/tui" "$INSTALL_DIR/"
+    # ALREADY DONE: cp -r "$PROJECT_DIR/tui" "$INSTALL_DIR/"
     chmod +x "$INSTALL_DIR/tui/"*.py 2>/dev/null || true
 
     # Create wrapper script for easy access.
@@ -313,7 +314,7 @@ install_services() {
     # Enable services (but don't start yet - need configuration first)
     systemctl enable mosquitto
     systemctl enable ds18b20-listener
-    systemctl enable otgw-listener
+    # NOT NEEDED: systemctl enable otgw-listener
     systemctl enable mqtt-logger
     systemctl enable log-flush.timer
     systemctl enable log-sync.timer
