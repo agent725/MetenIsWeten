@@ -1,12 +1,25 @@
 #!/usr/bin/env python3
 """
-DS18B20 Temperature Sensor Listener
+UART Temperature Sensor Listener
 
-Reads temperature from DS18B20 1-Wire sensors and publishes to MQTT.
+Reads temperature from a UART device (default /dev/ttyS0) and publishes
+per-channel averages to MQTT.
+
+The source sends a repeating, pipe-delimited frame every second:
+
+    T0:20|T1:19|T0:20.1|T1:19.1|
+
+Each 'T<n>:<value>' token is one channel's temperature in Celsius; a frame may
+contain several readings per channel. Frames are newline-terminated.
 
 Features:
-- Auto-discovers all connected DS18B20 sensors
-- Publishes JSON with sensor ID and temperature
+- No sensor discovery: channels come from the incoming frames
+- Collects every accepted reading over the interval (default 60 s, i.e. one
+  minute) and publishes the average of each channel — so T0 and T1 each get
+  their own one-minute average
+- Discards a reading that is 30% or more different from the last accepted
+  measurement on that channel (a misread)
+- Publishes JSON with channel ID and temperature
 - Configurable read interval
 - Graceful shutdown on SIGTERM/SIGINT
 
@@ -14,7 +27,7 @@ Usage:
     ds18b20_listener.py [options]
 
 Examples:
-    # Default: read every 60 seconds, publish to localhost
+    # Default: read every 60 seconds from /dev/ttyS0, publish to localhost
     ds18b20_listener.py
 
     # Custom interval and broker
@@ -24,18 +37,16 @@ Examples:
     ds18b20_listener.py -v
 
 Requirements:
-    - Raspberry Pi with 1-Wire enabled (dtoverlay=w1-gpio in /boot/config.txt)
-    - DS18B20 sensors on GPIO17 (Pin 11) or GPIO18 (Pin 12); both enabled via
-      two dtoverlay=w1-gpio lines (one per pin) in /boot/config.txt
+    - /dev/ttyS0 present and fed by the UART temperature source
     - paho-mqtt: pip install paho-mqtt
 """
 __author__ = 'Nikolaas Oosterhof'
 __copyright__ = 'Copyright 2026 Nikolaas Oosterhof'
 
 import argparse
-import glob
 import json
 import os
+import re
 import signal
 import socket
 import sys
@@ -44,10 +55,21 @@ from typing import Optional
 
 PI_ID_FILE = '/etc/otgw/pi-id'
 MODE_FILE = '/etc/otgw/mode'
+DEFAULT_DEVICE = '/dev/ttyS0'
 
 # Watchdog ping interval; systemd kills the service if no ping within
 # WatchdogSec (120 s in the unit file). Half that interval is the target.
 _WATCHDOG_PING_INTERVAL = 60  # seconds
+
+# A reading that differs by 30% or more from the last accepted measurement on
+# the same channel is a misread and is discarded. The reference magnitude is
+# clamped to 1 °C so that readings near 0 °C (where 30% of the reference
+# vanishes) are not discarded for every tiny change.
+ANOMALY_THRESHOLD = 0.30
+MIN_REFERENCE = 1.0
+
+# One reading token, e.g. 'T0:20.1'
+TOKEN_RE = re.compile(r'T(\d+):(-?\d+(?:\.\d+)?)')
 
 
 def _sd_notify(msg: str) -> None:
@@ -115,22 +137,34 @@ def build_topic(base_topic: str, image_id: Optional[str],
     return f"{image_id}/{base_topic}"
 
 
-# 1-Wire device path
-W1_DEVICES_PATH = '/sys/bus/w1/devices'
-W1_SENSOR_PREFIX = '28-'  # DS18B20 sensors start with 28-
+def parse_frame(chunk: str) -> list[tuple[int, float]]:
+    """Parse a frame such as 'T0:20|T1:19|T0:20.1|T1:19.1|' into (channel, °C) pairs.
+
+    Tolerates the trailing '|', whitespace, and any non-reading text in the chunk.
+    """
+    return [(int(channel), float(value)) for channel, value in TOKEN_RE.findall(chunk)]
 
 
-class DS18B20Listener:
-    """DS18B20 temperature sensor listener with MQTT publishing."""
+def is_misread(temperature: float, last: Optional[float]) -> bool:
+    """Return True when the reading is 30% or more different from the last accepted one."""
+    if last is None:
+        return False  # first reading on this channel has nothing to compare with
+    return abs(temperature - last) >= ANOMALY_THRESHOLD * max(abs(last), MIN_REFERENCE)
+
+
+class UARTTemperatureListener:
+    """UART temperature listener with MQTT publishing of per-channel averages."""
 
     def __init__(
         self,
+        device: str = DEFAULT_DEVICE,
         host: str = 'localhost',
         port: int = 1883,
         topic: str = 'home/sensors/temperature',
         interval: int = 60,
         verbose: bool = False,
     ):
+        self.device = device
         self.host = host
         self.port = port
         self.topic = topic
@@ -140,12 +174,18 @@ class DS18B20Listener:
         self.client: Optional[mqtt.Client] = None
         self.running = False
         self.readings_count = 0
+        self.serial = None
 
-        # One-reading retry buffer per sensor: if MQTT is offline when a
-        # reading is ready, store it here and attempt delivery on the next
-        # publish cycle. Only the most recent reading per sensor is kept —
-        # temperature data has 15-s granularity so a single retry is enough
-        # to survive short broker outages without accumulating stale data.
+        # Last accepted reading per channel, used as the reference for the
+        # misread check. Only the most recent accepted value per channel is
+        # kept.
+        self._last: dict[int, float] = {}
+
+        # One-reading retry buffer per channel: if MQTT is offline when an
+        # average is ready, store it here and attempt delivery on the next
+        # publish cycle. Only the most recent average per channel is kept —
+        # averages have interval granularity so a single retry is enough to
+        # survive short broker outages without accumulating stale data.
         # (NFR-4.76)
         self._pending: dict[str, float] = {}
 
@@ -154,70 +194,25 @@ class DS18B20Listener:
         if self.verbose:
             print(message)
 
-    def discover_sensors(self) -> list[str]:
-        """
-        Discover all connected DS18B20 sensors.
+    def open_device(self) -> None:
+        """Open the UART device, waiting for it to appear after boot."""
+        if not os.path.exists(self.device):
+            print(f"{self.device} not available, waiting...", file=sys.stderr)
+            delays = [5, 10, 30, 60]
+            attempt = 0
+            while not os.path.exists(self.device):
+                delay = delays[min(attempt, len(delays) - 1)]
+                time.sleep(delay)
+                attempt += 1
+        self.serial = open(self.device, 'r')
+        print(f"Opened {self.device}")
 
-        Returns list of sensor IDs (e.g., ['28-00000abcdef1', '28-00000abcdef2'])
-        """
-        pattern = os.path.join(W1_DEVICES_PATH, f'{W1_SENSOR_PREFIX}*')
-        sensor_paths = glob.glob(pattern)
-
-        sensors = []
-        for path in sensor_paths:
-            sensor_id = os.path.basename(path)
-            sensors.append(sensor_id)
-
-        return sorted(sensors)
-
-    def read_temperature(self, sensor_id: str) -> Optional[float]:
-        """
-        Read temperature from a DS18B20 sensor.
-
-        Args:
-            sensor_id: Sensor ID (e.g., '28-00000abcdef1')
-
-        Returns:
-            Temperature in Celsius, or None if read failed
-        """
-        # The temperature is in the 'temperature' file (newer kernels)
-        # or in 'w1_slave' file (older kernels)
-        temp_file = os.path.join(W1_DEVICES_PATH, sensor_id, 'temperature')
-        slave_file = os.path.join(W1_DEVICES_PATH, sensor_id, 'w1_slave')
-
-        try:
-            # Try new-style temperature file first (raw millidegrees)
-            if os.path.exists(temp_file):
-                with open(temp_file, 'r') as f:
-                    content = f.read().strip()
-                    temp_millic = int(content)
-                    return temp_millic / 1000.0
-
-            # Fall back to w1_slave file
-            if os.path.exists(slave_file):
-                with open(slave_file, 'r') as f:
-                    lines = f.readlines()
-
-                # Check CRC validity (first line ends with YES)
-                if len(lines) < 2 or 'YES' not in lines[0]:
-                    self.log(f"CRC check failed for {sensor_id}")
-                    return None
-
-                # Extract temperature from second line (t=XXXXX)
-                temp_pos = lines[1].find('t=')
-                if temp_pos == -1:
-                    self.log(f"Temperature not found in response for {sensor_id}")
-                    return None
-
-                temp_millic = int(lines[1][temp_pos + 2:])
-                return temp_millic / 1000.0
-
-            self.log(f"No temperature file found for {sensor_id}")
-            return None
-
-        except (IOError, ValueError) as e:
-            self.log(f"Error reading {sensor_id}: {e}")
-            return None
+    def read_frame(self) -> str:
+        """Read one frame (one newline-terminated line) from the UART device."""
+        line = self.serial.readline()
+        if not line:
+            raise IOError(f"{self.device} reached end of input (device disconnected?)")
+        return line
 
     def on_connect(self, client: mqtt.Client, userdata, connect_flags,
                    reason_code, properties) -> None:
@@ -251,42 +246,42 @@ class DS18B20Listener:
                 time.sleep(delay)
                 attempt += 1
 
-    def publish_temperature(self, sensor_id: str, temperature: float) -> None:
-        """Publish temperature reading to MQTT with one-reading retry. (NFR-4.76)
+    def publish_temperature(self, channel_id: str, temperature: float) -> None:
+        """Publish a channel average to MQTT with one-reading retry. (NFR-4.76)
 
-        If MQTT is offline the reading is stored in _pending. On the next call
-        (next interval cycle) the pending reading is published first, then the
-        fresh reading. Only the most recent pending reading per sensor is kept.
+        If MQTT is offline the average is stored in _pending. On the next call
+        (next interval cycle) the pending average is published first, then the
+        fresh one. Only the most recent pending average per channel is kept.
         """
-        # Attempt any pending reading from the previous cycle first.
-        if sensor_id in self._pending:
-            if self._try_publish(sensor_id, self._pending[sensor_id]):
-                del self._pending[sensor_id]
+        # Attempt any pending average from the previous cycle first.
+        if channel_id in self._pending:
+            if self._try_publish(channel_id, self._pending[channel_id]):
+                del self._pending[channel_id]
             else:
-                # Still offline; replace stale pending with fresh reading and bail.
-                self._pending[sensor_id] = temperature
+                # Still offline; replace stale pending with fresh average and bail.
+                self._pending[channel_id] = temperature
                 print(
-                    f"MQTT offline — pending reading for {sensor_id} updated, "
+                    f"MQTT offline — pending average for {channel_id} updated, "
                     "will retry next cycle (NFR-4.76)",
                     file=sys.stderr,
                 )
                 return
 
-        # Publish the current reading.
-        if not self._try_publish(sensor_id, temperature):
-            self._pending[sensor_id] = temperature
+        # Publish the current average.
+        if not self._try_publish(channel_id, temperature):
+            self._pending[channel_id] = temperature
             print(
-                f"MQTT offline — reading for {sensor_id} queued for retry "
+                f"MQTT offline — average for {channel_id} queued for retry "
                 "(NFR-4.76)",
                 file=sys.stderr,
             )
 
-    def _try_publish(self, sensor_id: str, temperature: float) -> bool:
+    def _try_publish(self, channel_id: str, temperature: float) -> bool:
         """Attempt one publish; return True on success, False if offline or failed."""
         if not (self.client and self.client.is_connected()):
             return False
         payload = json.dumps({
-            'sensor_id': sensor_id,
+            'sensor_id': channel_id,
             'temperature_c': round(temperature, 2),
         })
         result = self.client.publish(self.topic, payload)
@@ -296,7 +291,7 @@ class DS18B20Listener:
             return True
         # TOCTOU: connection dropped between is_connected() and publish(). (NFR-4.74)
         print(
-            f"Publish failed (rc={result.rc}), reading queued for retry "
+            f"Publish failed (rc={result.rc}), average queued for retry "
             "(NFR-4.74/4.76)",
             file=sys.stderr,
         )
@@ -311,54 +306,53 @@ class DS18B20Listener:
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
+    def collect_averages(self) -> dict[str, float]:
+        """Read frames for one interval and return the average of each channel.
+
+        Frames arrive every second, so readline paces the loop naturally.
+        Readings that fail the misread check are discarded and never update
+        the reference value.
+        """
+        samples: dict[int, list[float]] = {}
+
+        for _ in range(self.interval):
+            if not self.running:
+                break
+            for channel, temperature in parse_frame(self.read_frame()):
+                last = self._last.get(channel)
+                if is_misread(temperature, last):
+                    self.log(
+                        f"Discarding T{channel}: {temperature} "
+                        f"(>= {int(ANOMALY_THRESHOLD * 100)}% off last reading {last})"
+                    )
+                    continue
+                self._last[channel] = temperature
+                samples.setdefault(channel, []).append(temperature)
+
+        if not samples:
+            self.log("No readings collected in this interval")
+            return {}
+
+        averages = {}
+        for channel in sorted(samples):
+            temps = samples[channel]
+            average = sum(temps) / len(temps)
+            self.log(f"T{channel}: {len(temps)} readings, average {average:.2f} °C")
+            averages[f"T{channel}"] = average
+        return averages
+
     def start(self) -> None:
         """Start the temperature listener."""
-        print("DS18B20 Listener starting...")
+        print("UART Temperature Listener starting...")
+        print(f"  Device: {self.device}")
         print(f"  Broker: {self.host}:{self.port}")
         print(f"  Topic: {self.topic}")
         print(f"  Interval: {self.interval}s")
         print()
 
-        # Wait for 1-Wire support (may take a few seconds after boot,
-        # or may be absent if dtoverlay=w1-gpio is not configured).
-        if not os.path.exists(W1_DEVICES_PATH):
-            print(
-                f"1-Wire not yet available ({W1_DEVICES_PATH}), waiting...",
-                file=sys.stderr,
-            )
-            print(
-                "  If permanently absent: "
-                "add 'dtoverlay=w1-gpio' to /boot/config.txt and reboot",
-                file=sys.stderr,
-            )
-            delays = [5, 10, 30, 60]
-            attempt = 0
-            while not os.path.exists(W1_DEVICES_PATH):
-                delay = delays[min(attempt, len(delays) - 1)]
-                time.sleep(delay)
-                attempt += 1
-            print("1-Wire available, continuing...")
+        # Open UART device (the port may appear a few seconds after boot).
+        self.open_device()
 
-        # Discover sensors — log per-bus-master breakdown for hardware diagnosis
-        for master in sorted(glob.glob(
-                os.path.join(W1_DEVICES_PATH, 'w1_bus_master*'))):
-            slaves_file = os.path.join(master, 'w1_master_slaves')
-            try:
-                slaves = open(slaves_file).read().split()
-                ds = [s for s in slaves if s.startswith(W1_SENSOR_PREFIX)]
-                name = os.path.basename(master)
-                print(f"  {name}: {', '.join(ds) if ds else 'no DS18B20'}")
-            except OSError:
-                pass
-
-        sensors = self.discover_sensors()
-        if not sensors:
-            print("Warning: No DS18B20 sensors found", file=sys.stderr)
-            print(f"Looking in: {W1_DEVICES_PATH}/{W1_SENSOR_PREFIX}*", file=sys.stderr)
-        else:
-            print(f"Found {len(sensors)} sensor(s): {', '.join(sensors)}")
-
-        print()
         sys.stdout.flush()
 
         # Setup signal handlers
@@ -384,7 +378,7 @@ class DS18B20Listener:
 
         _last_watchdog_ping: float = 0.0
 
-        # Main loop: periodic temperature reads
+        # Main loop: collect one interval of readings, publish averages
         try:
             while self.running:
                 # Ping the systemd watchdog once per cycle. (NFR-4.80)
@@ -393,21 +387,8 @@ class DS18B20Listener:
                     _sd_notify('WATCHDOG=1')
                     _last_watchdog_ping = _now
 
-                # Re-discover sensors each cycle (hot-plug support)
-                sensors = self.discover_sensors()
-
-                for sensor_id in sensors:
-                    temp = self.read_temperature(sensor_id)
-                    if temp is not None:
-                        self.publish_temperature(sensor_id, temp)
-                    else:
-                        self.log(f"Skipping {sensor_id} (read failed)")
-
-                # Sleep for interval
-                for _ in range(self.interval):
-                    if not self.running:
-                        break
-                    time.sleep(1)
+                for channel_id, average in self.collect_averages().items():
+                    self.publish_temperature(channel_id, average)
 
         except Exception as e:
             print(f"Error in main loop: {e}", file=sys.stderr)
@@ -417,6 +398,10 @@ class DS18B20Listener:
     def stop(self) -> None:
         """Stop the listener."""
         self.running = False
+
+        # Close UART device
+        if self.serial:
+            self.serial.close()
 
         # Disconnect MQTT
         if self.client:
@@ -430,26 +415,27 @@ class DS18B20Listener:
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description='DS18B20 temperature sensor listener with MQTT publishing',
+        description='UART temperature sensor listener with MQTT publishing',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s                                    # Default settings
-  %(prog)s --interval 30                      # Read every 30 seconds
+  %(prog)s --interval 30                      # Average every 30 seconds
   %(prog)s --host 192.168.1.100               # Custom MQTT broker
   %(prog)s --topic sensors/outdoor/temp       # Custom topic
+  %(prog)s --device /dev/ttyUSB0              # Custom UART device
   %(prog)s -v                                 # Verbose output
 
-Setup:
-  1. Enable 1-Wire (add both lines to /boot/config.txt):
-        echo 'dtoverlay=w1-gpio,gpiopin=17' >> /boot/config.txt
-        echo 'dtoverlay=w1-gpio,gpiopin=18' >> /boot/config.txt
-  2. Reboot
-  3. Connect DS18B20 to GPIO17 (Pin 11) or GPIO18 (Pin 12) with 4.7kΩ pull-up to 3.3V
-  4. Verify: ls /sys/bus/w1/devices/28-*
+Input format (one frame per second, newline-terminated):
+  T0:20|T1:19|T0:20.1|T1:19.1|
         """,
     )
 
+    parser.add_argument(
+        '--device',
+        default=DEFAULT_DEVICE,
+        help=f'UART device to read from (default: {DEFAULT_DEVICE})',
+    )
     parser.add_argument(
         '--host',
         default='localhost',
@@ -475,12 +461,12 @@ Setup:
         '--interval',
         type=int,
         default=60,
-        help='Read interval in seconds (default: 60)',
+        help='Average interval in seconds (default: 60)',
     )
     parser.add_argument(
         '-v', '--verbose',
         action='store_true',
-        help='Print each reading as it happens',
+        help='Print each reading, discard and average as it happens',
     )
 
     return parser.parse_args()
@@ -497,7 +483,8 @@ def main() -> None:
     if mode == 'test':
         print(f"Mode: TEST — publishing to {topic}")
 
-    listener = DS18B20Listener(
+    listener = UARTTemperatureListener(
+        device=args.device,
         host=args.host,
         port=args.port,
         topic=topic,
